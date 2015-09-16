@@ -40,7 +40,7 @@ extern "C" {
  */
 #ifndef PSL_CONFIG_INLINE_FUNC
     #ifdef __GNUC__
-        #define PSL_CONFIG_INLINE_FUNC  extern __inline
+        #define PSL_CONFIG_INLINE_FUNC  inline
     #else
         #error "I don't know how to declare inline funcs in this build environment"
     #endif
