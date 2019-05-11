@@ -150,18 +150,18 @@ PmSockOpensslMatchCertInStore(struct x509_store_ctx_st*  const x509StoreCtx,
     /// @see X509_STORE_CTX_get1_issuer + X509_check_issued + X509_cmp
 
     X509_NAME* const subjName = X509_get_subject_name(cert);
-    X509_OBJECT installedObj;
+    X509_OBJECT *installedObj = NULL;
     int const rc = X509_STORE_get_by_subject(x509StoreCtx, X509_LU_X509, subjName,
-                                             &installedObj); 
+                                             installedObj); 
     
     bool matched = false;
 
-    if (X509_LU_X509 == rc && installedObj.data.x509) {
-        matched = (0 == X509_cmp(cert, installedObj.data.x509));
+    if (X509_LU_X509 == rc && X509_OBJECT_get0_X509(installedObj)) {
+        matched = (0 == X509_cmp(cert, X509_OBJECT_get0_X509(installedObj)));
     }
 
     if (X509_LU_FAIL != rc) {
-        X509_OBJECT_free_contents(&installedObj);
+        X509_OBJECT_free(installedObj);
     }
 
     if (X509_LU_X509 != rc) {
@@ -179,7 +179,7 @@ PmSockOpensslMatchCertInStore(struct x509_store_ctx_st*  const x509StoreCtx,
     /**
      * Look through all certs with matching subject names
      */
-    int i = X509_OBJECT_idx_by_subject(x509StoreCtx->ctx->objs, X509_LU_X509, subjName);
+    int i = X509_OBJECT_idx_by_subject(X509_STORE_get0_objects(X509_STORE_CTX_get0_store(x509StoreCtx)), X509_LU_X509, subjName);
     if (-1 == i) {
         PSL_LOG_WARNING("%s (cert=%p): ERROR: X509_OBJECT_idx_by_subject() " \
                         "found no certs with matching subject" \
@@ -188,14 +188,14 @@ PmSockOpensslMatchCertInStore(struct x509_store_ctx_st*  const x509StoreCtx,
         return PSL_ERR_NONE;
     }
 
-    for (; i < sk_X509_OBJECT_num(x509StoreCtx->ctx->objs); i++) {
-        X509_OBJECT* const pObj = sk_X509_OBJECT_value(x509StoreCtx->ctx->objs, i);
+    for (; i < sk_X509_OBJECT_num(X509_STORE_get0_objects(X509_STORE_CTX_get0_store(x509StoreCtx))); i++) {
+        X509_OBJECT* const pObj = sk_X509_OBJECT_value(X509_STORE_get0_objects(X509_STORE_CTX_get0_store(x509StoreCtx)), i);
 
-        if (0 != X509_NAME_cmp(subjName, X509_get_subject_name(pObj->data.x509))) {
+        if (0 != X509_NAME_cmp(subjName, X509_get_subject_name(X509_OBJECT_get0_X509(pObj)))) {
             continue;
         }
 
-        if (0 == X509_cmp(cert, pObj->data.x509)) {
+        if (0 == X509_cmp(cert, X509_OBJECT_get0_X509(pObj))) {
             PSL_LOG_DEBUG("%s (cert=%p): cert found", __func__, cert);
             *pMatchRes = true;
             return PSL_ERR_NONE;
