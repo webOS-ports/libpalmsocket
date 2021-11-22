@@ -47,7 +47,7 @@ webos_add_compiler_flags(ALL ${PMSTATEMACHINE_CFLAGS_OTHER})
 
 # Adding -Wno-deprecated-declarations flag to stop warnings for 
 # some glib functions on older Ubuntu versions
-webos_add_compiler_flags(ALL -Wno-deprecated-declarations)
+webos_add_compiler_flags(ALL -Wno-deprecated-declarations -Wl,--no-undefined)
 
 include_directories(include/public/palmsocket)
 
