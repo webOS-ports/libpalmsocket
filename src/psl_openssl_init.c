@@ -436,8 +436,8 @@ thread_safety_init(ThreadSafetyInfo* const pData)
 
     int i;
     for (i=0; i < pData->numLocks; i++) {
-        PSL_LOG_DEBUGLOW("%s: Creating thread lock type=%d (%s)",
-                         __func__, i, CRYPTO_get_lock_name(i));
+        PSL_LOG_DEBUGLOW("%s: Creating thread lock type=%d",
+                         __func__, i);
 
         /// @note The locks are of the non-recursive kind by default
         int const mutexInitRes = pthread_mutex_init(&(pData->pLocks[i].mutex),
@@ -485,8 +485,8 @@ thread_safety_cleanup(ThreadSafetyInfo* const pData)
 
     int i;
     for (i=0; i < pData->numLocks; i++) {
-        PSL_LOG_DEBUGLOW("%s: Destroying thread lock type=%d (%s)",
-                         __func__, i, CRYPTO_get_lock_name(i));
+        PSL_LOG_DEBUGLOW("%s: Destroying thread lock type=%d",
+                         __func__, i);
 
         pthread_mutex_destroy(&(pData->pLocks[i].mutex));
     }
@@ -533,9 +533,9 @@ static void
 lock_or_unlock_cb(int const mode, int const type, const char* const file,
                   int const line)
 {
-    PSL_LOG_DEBUGLOW("%s: threadId=%lu, mode=0x%X, type=%d (%s), caller=%s:%d",
+    PSL_LOG_DEBUGLOW("%s: threadId=%lu, mode=0x%X, type=%d, caller=%s:%d",
                      __func__, CRYPTO_thread_id(), (unsigned)mode, type,
-                     CRYPTO_get_lock_name(type), file, line);
+                     file, line);
 
     if (mode & CRYPTO_LOCK) {
         pthread_mutex_lock(&(gInitState.opensslData.threadSafety.pLocks[type].mutex));
