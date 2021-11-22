@@ -501,15 +501,14 @@ psl_err_process_and_purge_openssl_err_stack(
         }
 
         const int libNum = ERR_GET_LIB(opensslErr);
-        const int funcCode = ERR_GET_FUNC(opensslErr);
         const int reasonCode = ERR_GET_REASON(opensslErr);
 
         PSL_LOG_ERROR("%s (client=%p): ERROR from openssl error-stack (raw) "
-                      "%lu (0x%lx); lib=%d, func=%d, reason=%d (%s)",
+                      "%lu (0x%lx); lib=%d, reason=%d (%s)",
                       __func__, client,
                       (unsigned long)opensslErr,
                       (unsigned long)opensslErr,
-                      libNum, funcCode, reasonCode, errText);
+                      libNum, reasonCode, errText);
     }
 
     if (!gotErrors) {
