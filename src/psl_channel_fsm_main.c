@@ -36,7 +36,6 @@
 
 #include <glib.h>
 
-//#define STATE_MACHINE_ENGINE_WEBOS_FEATURES ///< for FsmDbgEnableLoggingViaPmLogLib
 #include <PmStateMachineEngine/PalmFsm.h>
 #include <PmStateMachineEngine/PalmFsmDbg.h>
 
@@ -148,12 +147,6 @@ psl_chan_fsm_new(PslChanFsm**           const fsmResult,
                          sizeof(fsm->beginEvtArgSupport.requestArgBuf),
                          &fsm->beginEvtArgSupport.requestArgBuf,
                          &fsm->beginEvtArgSupport.dispatchArgBuf);
-
-    FsmDbgEnableLoggingViaPmLogLib(&fsm->base.base,
-                                   kFsmDbgLogOptEvents,
-                                   gPslLogContext,
-                                   channel/*cookie*/);
-
 
     /// Initialize and insert our common states into the FSM
 
