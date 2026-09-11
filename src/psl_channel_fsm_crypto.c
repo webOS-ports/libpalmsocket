@@ -2287,7 +2287,9 @@ crypto_handle_READ(PslChanFsm*                          const pFsm,
     *arg->pGioStatus = G_IO_STATUS_NORMAL;
 
     uint8_t*    pdst = (uint8_t*)arg->buf;
-    int         dstcnt = arg->cnt;
+    /// Clamp the gsize request to what our int-based internals can carry;
+    /// a partial read is fine per GIOChannel semantics
+    int         dstcnt = (arg->cnt <= INT_MAX) ? (int)arg->cnt : INT_MAX;
 
     /*
      * If there is data in our deferred read buffer already, then
@@ -2520,9 +2522,13 @@ crypto_handle_WRITE(PslChanFsm*                         const pFsm,
 
     int numWritten = 0, deferredWriteCnt = 0;
 
+    /// Clamp the gsize request to what our int-based internals can carry;
+    /// a partial write is fine per GIOChannel semantics
+    int const writeCnt = (arg->cnt <= INT_MAX) ? (int)arg->cnt : INT_MAX;
+
     PslError const writePslErr = crypto_write_low(pFsm,
                                                   arg->buf,
-                                                  arg->cnt,
+                                                  writeCnt,
                                                   maxWriteCnt,
                                                   &numWritten,
                                                   &deferredWriteCnt);

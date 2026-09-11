@@ -146,7 +146,10 @@ psl_io_buf_get_max_capacity(const PslIOBuf* const pIOBuf)
 PSL_CONFIG_INLINE_FUNC ssize_t
 psl_io_buf_get_data_size(const PslIOBuf* const pIOBuf)
 {
-    return (pIOBuf->garray_->len - pIOBuf->nextConsumeIndex_);
+    /// Compute in signed arithmetic so a broken invariant surfaces as a
+    /// detectably negative value instead of a huge unsigned one (the
+    /// operands would otherwise promote to unsigned int on ILP32)
+    return ((ssize_t)pIOBuf->garray_->len - pIOBuf->nextConsumeIndex_);
 }
 
 
@@ -320,8 +323,9 @@ psl_io_buf_extend_if_possible(PslIOBuf* const pIOBuf,
     ssize_t const maxRes = pIOBuf->maxSize_ - psl_io_buf_get_data_size(pIOBuf);
     ssize_t const actualRes = (reqCnt <= maxRes) ? reqCnt : maxRes;
 
-    if ((pIOBuf->garray_->len + actualRes) <= pIOBuf->maxSize_) {
-        (void)g_array_set_size(pIOBuf->garray_, pIOBuf->garray_->len + actualRes);
+    if (((ssize_t)pIOBuf->garray_->len + actualRes) <= pIOBuf->maxSize_) {
+        (void)g_array_set_size(pIOBuf->garray_,
+                               (guint)((ssize_t)pIOBuf->garray_->len + actualRes));
     }
     else {
         ssize_t oldDataSize;
