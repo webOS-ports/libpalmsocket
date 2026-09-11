@@ -58,7 +58,13 @@
 
 
 
-#define DEFAULT_CIPHER_LIST "ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH"
+/**
+ * @note !aNULL/!eNULL exclude ALL anonymous and NULL-encryption suites
+ *       (including anonymous ECDH, which the legacy !ADH did not cover);
+ *       an anonymous suite sends no certificate, silently bypassing
+ *       peer verification and the hostname check
+ */
+#define DEFAULT_CIPHER_LIST "ALL:!aNULL:!eNULL:!ADH:!LOW:!EXP:!MD5:@STRENGTH"
 
 
 #if 0
@@ -1435,7 +1441,9 @@ crypto_create_and_config_ssl(
      *       http://www.openssl.org/docs/ssl/SSL_CTX_set_options.html#.
      */
     /// @note SSL_CTX_set_options returns the new option-set, which we ignore
-    (void)SSL_set_options(sslInfo->ssl, SSL_OP_ALL | SSL_OP_NO_SSLv2);
+    /// @note SSLv3 is disabled (POODLE, CVE-2014-3566)
+    (void)SSL_set_options(sslInfo->ssl,
+                          SSL_OP_ALL | SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
 
     if (!SSL_set_cipher_list(sslInfo->ssl, DEFAULT_CIPHER_LIST)) {
         pslErr = psl_err_process_and_purge_openssl_err_stack(
