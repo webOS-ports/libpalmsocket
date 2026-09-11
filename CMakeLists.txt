@@ -45,9 +45,15 @@ pkg_check_modules(PMSTATEMACHINE REQUIRED PmStateMachineEngine)
 include_directories(${PMSTATEMACHINE_INCLUDE_DIRS})
 webos_add_compiler_flags(ALL ${PMSTATEMACHINE_CFLAGS_OTHER})
 
-# Adding -Wno-deprecated-declarations flag to stop warnings for 
+# Adding -Wno-deprecated-declarations flag to stop warnings for
 # some glib functions on older Ubuntu versions
 webos_add_compiler_flags(ALL -Wno-deprecated-declarations -Wl,--no-undefined)
+
+# Hardening: stack protector and full RELRO.  (OE builds typically add
+# these plus _FORTIFY_SOURCE globally already; repeating them here is
+# harmless and covers standalone builds.)
+webos_add_compiler_flags(ALL -fstack-protector-strong)
+webos_add_linker_options(ALL -z relro -z now)
 
 include_directories(include/public/palmsocket)
 
