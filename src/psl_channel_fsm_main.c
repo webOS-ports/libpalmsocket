@@ -798,7 +798,13 @@ chan_fsm_init_state_handler(PslChanFsmInitState*    const pState,
             const struct PslChanFsmEvtArgSetConnFD* const arg =
                 &evtArg->setConnFD;
 
-            PSL_ASSERT(arg->fd >= 0);
+            /// Reject invalid descriptors outright: storing a negative fd
+            /// here would surface later as writes/closes on a bad fd
+            if (arg->fd < 0) {
+                PSL_LOG_ERROR("%s (fsm=%p): SET_CONN_FD ERROR: invalid " \
+                              "file descriptor %d", __func__, pFsm, arg->fd);
+                return kPslSmeEventStatus_passToParent;
+            }
 
             if (AF_UNSPEC != pFsm->userSettings.serverAddr.addrFamily) {
                 PSL_LOG_ERROR("%s (fsm=%p): SET_CONN_FD ERROR: " \
