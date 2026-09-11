@@ -36,6 +36,10 @@
 
 #include <glib.h>
 
+/// Expose FsmDbgEnableLoggingViaPmLogLib from PalmFsmDbg.h; the
+/// webOS-ports PmStateMachineEngine is built with
+/// FSM_CONFIG_WEBOS_FEATURES=1, so the symbol is available
+#define STATE_MACHINE_ENGINE_WEBOS_FEATURES
 #include <PmStateMachineEngine/PalmFsm.h>
 #include <PmStateMachineEngine/PalmFsmDbg.h>
 
@@ -147,6 +151,14 @@ psl_chan_fsm_new(PslChanFsm**           const fsmResult,
                          sizeof(fsm->beginEvtArgSupport.requestArgBuf),
                          &fsm->beginEvtArgSupport.requestArgBuf,
                          &fsm->beginEvtArgSupport.dispatchArgBuf);
+
+    /// Route FSM event logging through our PmLogLib context (restores
+    /// the debug logging that was dropped while fixing the build for
+    /// newer toolchains)
+    FsmDbgEnableLoggingViaPmLogLib(&fsm->base.base,
+                                   kFsmDbgLogOptEvents,
+                                   gPslLogContext,
+                                   channel/*cookie*/);
 
     /// Initialize and insert our common states into the FSM
 
