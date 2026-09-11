@@ -678,29 +678,56 @@ psl_host_lookup_fd_watch_cb(gpointer userData,
     struct PmSockHostLookupSession_* ses =
         (struct PmSockHostLookupSession_*)userData;
 
-    fd_set rfd_set, wfd_set;
-    FD_ZERO(&rfd_set);
-    FD_ZERO(&wfd_set);
-
-
+    /**
+     * Handle input/output events in our c-ares channel instance
+     *
+     * @note We use ares_process_fd() per descriptor instead of building
+     *       fd_set's for ares_process(): FD_SET() performs no bounds
+     *       check, so a descriptor >= FD_SETSIZE would corrupt the
+     *       stack.  ares_process_fd() has no such limit (and also
+     *       drives c-ares' timeout processing on every call).
+     *
+     * @note ares_process_fd may complete and call our
+     *       psl_ares_host_callback() function synchronously before
+     *       returning if it's done or needs to because of error
+     *
+     * @note ares_process_fd may also cause our
+     *       psl_ares_sock_state_cb() function to be called
+     *       synchronously before it returns.
+     */
     bool somethingSet = false;
     gint i;
     for (i=0; i < numrecs; i++, pollrecs++) {
         GIOCondition const ioerrBits = pollrecs->indEvents &
             ~(G_IO_IN | G_IO_OUT);
 
+        ares_socket_t readFd = ARES_SOCKET_BAD;
+        ares_socket_t writeFd = ARES_SOCKET_BAD;
+
         if ((pollrecs->reqEvents & G_IO_IN) != 0) {
             if (ioerrBits || (pollrecs->indEvents & G_IO_IN) != 0) {
-                FD_SET(pollrecs->fd, &rfd_set);
-                somethingSet = true;
+                readFd = pollrecs->fd;
             }
         }
 
         if ((pollrecs->reqEvents & G_IO_OUT) != 0) {
             if (ioerrBits || (pollrecs->indEvents & G_IO_OUT) != 0) {
-                FD_SET(pollrecs->fd, &wfd_set);
-                somethingSet = true;
+                writeFd = pollrecs->fd;
             }
+        }
+
+        if (ARES_SOCKET_BAD == readFd && ARES_SOCKET_BAD == writeFd) {
+            continue;
+        }
+
+        somethingSet = true;
+        ares_process_fd(ses->aresChan, readFd, writeFd);
+
+        /// The lookup completed (or the user requested destruction) from
+        /// within the c-ares callback: the channel is about to go away,
+        /// so stop feeding it descriptors
+        if (ses->needDestroy || ses->aresHostCbWasCalled) {
+            break;
         }
     }
 
@@ -708,20 +735,10 @@ psl_host_lookup_fd_watch_cb(gpointer userData,
         PSL_LOG_DEBUG("%s (%s): cb called, but nothing of " \
                       "interest was set: probably timed out",
                       __func__, ses->userLabel);
-    }
 
-    /**
-     * Handle input/output events in our c-ares channel instance
-     * 
-     * @note ares_process may complete and call our
-     *       psl_ares_host_callback() function synchronously before
-     *       returning if it's done or needs to because of error
-     * 
-     * @note ares_process may also cause our
-     *       psl_ares_sock_state_cb() function to be called
-     *       synchronously before it returns.
-     */
-    ares_process(ses->aresChan, &rfd_set, &wfd_set);
+        /// Still drive c-ares' query-timeout processing
+        ares_process_fd(ses->aresChan, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+    }
 
 
     /**
@@ -795,20 +812,15 @@ psl_host_lookup_tv_to_millisec(const struct timeval* tvp)
         return -1;
     }
 
-    /// @todo need to optimize
     gint res;
-    gdouble temp = (tvp->tv_sec * 1000.0);
-    if (tvp->tv_usec > 1000) {
-        temp += (tvp->tv_usec / 1000);
-    }
+    /// Round the microsecond part up so we never wake before the deadline
+    gdouble const temp = (tvp->tv_sec * 1000.0) +
+        ((tvp->tv_usec + 999) / 1000);
     if (temp > G_MAXINT) {
         res = G_MAXINT;
     }
     else {
         res = temp;
-        if (!res && tvp->tv_usec) {
-            res = 1;
-        }
     }
 
     return res;
