@@ -18,11 +18,22 @@
 
 /** ****************************************************************************
  * @file psl_openssl_init.c
- * @ingroup psl_internal 
- * 
+ * @ingroup psl_internal
+ *
  * @brief  Openssl library initialization and uninitialization
  *         implementation.
- * 
+ *
+ * @note This module supports OpenSSL 0.9.8 through 3.x.  With
+ *       OpenSSL 1.1.0 and later the library initializes itself on
+ *       first use, is internally thread-safe (the legacy
+ *       CRYPTO_set_locking_callback machinery was removed upstream),
+ *       and performs its own cleanup via atexit(); on those versions
+ *       only the reference-counted bookkeeping, error-string loading
+ *       and PRNG seeding remain active here.  When building against
+ *       OpenSSL 0.9.8/1.0.x, the historical explicit init/cleanup and
+ *       thread-safety locking hooks are compiled in (see
+ *       PSL_OPENSSL_LEGACY_INIT below).
+ *
  * *****************************************************************************
  */
 #include "psl_build_config.h"
@@ -32,12 +43,20 @@
 
 #include <pthread.h>
 
-#include <openssl/conf.h>
-#include <openssl/engine.h>
+#include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+    #define PSL_OPENSSL_LEGACY_INIT 1
+    #include <openssl/conf.h>
+    #include <openssl/engine.h>
+#else
+    #define PSL_OPENSSL_LEGACY_INIT 0
+#endif
+
+#include "psl_openssl_compat.h"
 
 /**
  * openssl thread support test per 'man
@@ -60,8 +79,10 @@
 #include "psl_refcount.h"
 
 
+#if PSL_OPENSSL_LEGACY_INIT
 /**
- * Structures for our openssl thread-safety hook info
+ * Structures for our openssl thread-safety hook info (only needed
+ * for OpenSSL < 1.1.0; later versions are internally thread-safe)
  */
 
 typedef struct ThreadLock_ {
@@ -76,11 +97,7 @@ typedef struct ThreadSafetyInfo_ {
     int                 numLocks;
 
 } ThreadSafetyInfo;
-
-typedef struct PslOpensslInitData_ {
-    ThreadSafetyInfo    threadSafety;
-} PslOpensslInitData;
-
+#endif // PSL_OPENSSL_LEGACY_INIT
 
 
 typedef struct PslOpensslInitState_ {
@@ -93,7 +110,9 @@ typedef struct PslOpensslInitState_ {
 
     PslRefcount             refCount;       ///< initializer refcount
 
-    PslOpensslInitData      opensslData;
+#if PSL_OPENSSL_LEGACY_INIT
+    ThreadSafetyInfo        threadSafety;
+#endif
 } PslOpensslInitState;
 
 
@@ -104,32 +123,33 @@ static PslOpensslInitState gInitState = {
     .initType               = 0,
     .refCount               = {0},
 
-    .opensslData    = {
-        .threadSafety = {
-            .isInitialized  = false,
-            .pLocks         = NULL,
-            .numLocks       = 0
-        }
+#if PSL_OPENSSL_LEGACY_INIT
+    .threadSafety = {
+        .isInitialized  = false,
+        .pLocks         = NULL,
+        .numLocks       = 0
     }
+#endif
 };
 
 static PslError
 init_openssl_already_locked(PmSockOpensslInitType initType);
 
 static PslError
-init_openssl_low(PslOpensslInitData*    pData,
-                 PmSockOpensslInitType  initType);
+init_openssl_low(PmSockOpensslInitType initType);
 
-static void uninit_openssl_low(PslOpensslInitData* pData);
+static void uninit_openssl_low(void);
 
 
+#if PSL_OPENSSL_LEGACY_INIT
 static void thread_safety_init(ThreadSafetyInfo* pData);
 
 static void thread_safety_cleanup(ThreadSafetyInfo* pData);
 
-static unsigned long get_thread_id_cb();
+static unsigned long get_thread_id_cb(void);
 
 static void lock_or_unlock_cb(int mode, int type, const char *file, int line);
+#endif // PSL_OPENSSL_LEGACY_INIT
 
 
 
@@ -167,8 +187,9 @@ PmSockOpensslUninit(void)
     ///       (or _unlikely_ overflow of unbalanced Init calls: over 4 Billion)
     PSL_ASSERT(gInitState.isInitialized);
 
-    if (psl_refcount_atomic_unref(&gInitState.refCount)) {
-        uninit_openssl_low(&gInitState.opensslData);
+    if (gInitState.isInitialized &&
+        psl_refcount_atomic_unref(&gInitState.refCount)) {
+        uninit_openssl_low();
 
         gInitState.isInitialized = false;
     }
@@ -193,10 +214,14 @@ PmSockOpensslThreadCleanup(void)
     PSL_LOG_DEBUG("%s: isInitialized=%d, current initType=%d", __func__,
                   (int)gInitState.isInitialized, (int)gInitState.initType);
 
-    //PSL_ASSERT(gInitState.isInitialized);
-
     if (gInitState.isInitialized) {
-        ERR_remove_state(0);
+        /**
+         * @note OPENSSL_thread_stop() is the OpenSSL 1.1+ replacement
+         *       for the legacy ERR_remove_state(0)/
+         *       ERR_remove_thread_state(NULL) thread-local cleanup;
+         *       psl_openssl_compat.h maps it back for older versions
+         */
+        OPENSSL_thread_stop();
     }
     else {
         pslerr = PSL_ERR_NOT_ALLOWED;
@@ -214,8 +239,10 @@ PmSockOpensslThreadCleanup(void)
 /* =========================================================================
  * =========================================================================
  */
-void psl_openssl_init_conditional(PmSockOpensslInitType const initType)
+PslError psl_openssl_init_conditional(PmSockOpensslInitType const initType)
 {
+    PslError rc = PSL_ERR_NONE;
+
     pthread_mutex_lock(&gInitState.mutex);
 
     PSL_LOG_DEBUG("%s: initType=%d", __func__, (int)initType);
@@ -225,20 +252,22 @@ void psl_openssl_init_conditional(PmSockOpensslInitType const initType)
     }
 
     else {
-        (void)init_openssl_already_locked(initType);
+        rc = init_openssl_already_locked(initType);
     }
 
     pthread_mutex_unlock(&gInitState.mutex);
+
+    return rc;
 }
 
 
 
 /** ========================================================================
- * init_openssl_already_locked(): the worker function that 
- * implements PmSockOpensslInit() and is also used by 
- * psl_openssl_init_conditional(). Assumes that this module's 
- * mutex is already locked. 
- *  
+ * init_openssl_already_locked(): the worker function that
+ * implements PmSockOpensslInit() and is also used by
+ * psl_openssl_init_conditional(). Assumes that this module's
+ * mutex is already locked.
+ *
  * =========================================================================
  */
 static PslError
@@ -261,7 +290,7 @@ init_openssl_already_locked(PmSockOpensslInitType const initType)
         }
     }
     else {
-        rc = init_openssl_low(&gInitState.opensslData, initType);
+        rc = init_openssl_low(initType);
         if (PSL_ERR_NONE == rc) {
             gInitState.isInitialized = true;
             gInitState.initType = initType;
@@ -276,35 +305,33 @@ init_openssl_already_locked(PmSockOpensslInitType const initType)
 
 
 /** ========================================================================
- * init_openssl_low(): performs the requested openssl 
+ * init_openssl_low(): performs the requested openssl
  * initialization. Assumes our module's mutex is locked.
- *  
- * @todo Consider relocating this initialization logic to Palm's
- *       patch of the openssl library, along with patching the
- *       related initialiation/cleanup functions to do the right
- *       thing when called directly by various users (probably
- *       replace with no-ops or use re-entrant and thread-safe
- *       reference-count-based mechanisms)
- * 
- * @param pData 
- * @param initType 
- *  
- * @return PslError 0 on success; non-zero PslError code on 
+ *
+ * @note With OpenSSL 1.1+, both initType variants receive the same
+ *       treatment: the library is internally thread-safe, so the
+ *       legacy CRYPTO_set_locking_callback()/CRYPTO_set_id_callback()
+ *       hooks that kPmSockOpensslInitType_multiThreaded used to
+ *       install no longer exist (they were no-op macros in 1.1.x and
+ *       were removed in 3.0).  With older OpenSSL, the hooks are
+ *       installed as before.
+ *
+ * @param initType
+ *
+ * @return PslError 0 on success; non-zero PslError code on
  *         failure
- *  
+ *
  * =========================================================================
  */
 static PslError
-init_openssl_low(PslOpensslInitData*    const pData,
-                 PmSockOpensslInitType  const initType)
+init_openssl_low(PmSockOpensslInitType const initType)
 {
     PSL_LOG_INFO("%s: ENTERING", __func__);
-
-    PSL_ASSERT(pData);
 
     PSL_ASSERT(kPmSockOpensslInitType_singleThreaded == initType ||
                kPmSockOpensslInitType_multiThreaded  == initType);
 
+#if PSL_OPENSSL_LEGACY_INIT
     /**
      * @note SSL_library_init() is neither reentrant nor
      *       thread-safe.  This probably applies to
@@ -322,20 +349,38 @@ init_openssl_low(PslOpensslInitData*    const pData,
 
     if (kPmSockOpensslInitType_multiThreaded  == initType) {
         PSL_LOG_DEBUG("%s: Calling thread_safety_init", __func__);
-        thread_safety_init(&pData->threadSafety);
+        thread_safety_init(&gInitState.threadSafety);
     }
+#else
+    PSL_LOG_DEBUG("%s: Calling OPENSSL_init_ssl()", __func__);
+    if (!OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS |
+                          OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL)) {
+        PSL_LOG_FATAL("%s: ERROR: OPENSSL_init_ssl() failed.", __func__);
+        return PSL_ERR_OPENSSL;
+    }
+#endif // PSL_OPENSSL_LEGACY_INIT
 
     /**
-     * @note /dev/urandom emits bytes from a PRNG and will produce 
+     * @note /dev/urandom emits bytes from a PRNG and will produce
      *       bytes forever. Seeding with 1k byes is appropriate.
      *       /dev/random produces better quality randomness but can
      *       block, so urandom is better here.
+     *
+     * @note OpenSSL 1.1+ auto-seeds its DRBG from the OS on first
+     *       use, so a failure here is logged but not treated as fatal.
      */
     PSL_LOG_DEBUG("%s: Calling RAND_load_file()", __func__);
     const char* const urandomPath = "/dev/urandom";
     int const numRandBytesRead = RAND_load_file(urandomPath, 1024);
-    PSL_LOG_DEBUG("%s: RAND_load_file() read %d bytes from %s",
-                  __func__, numRandBytesRead, urandomPath);
+    if (numRandBytesRead <= 0) {
+        PSL_LOG_WARNING("%s: WARNING: RAND_load_file(%s) read no bytes " \
+                        "(rc=%d); relying on OpenSSL's automatic seeding",
+                        __func__, urandomPath, numRandBytesRead);
+    }
+    else {
+        PSL_LOG_DEBUG("%s: RAND_load_file() read %d bytes from %s",
+                      __func__, numRandBytesRead, urandomPath);
+    }
 
     PSL_LOG_INFO("%s: LEAVING WITH SUCCESS", __func__);
 
@@ -344,33 +389,30 @@ init_openssl_low(PslOpensslInitData*    const pData,
 
 
 /** ========================================================================
- * uninit_openssl_low(): Uninitializes openssl.  Assumes our 
- * module's mutex is locked. 
- * 
- * @param pData 
- *  
+ * uninit_openssl_low(): Uninitializes openssl.  Assumes our
+ * module's mutex is locked.
+ *
+ * @note OpenSSL 1.1+ registers its own atexit() cleanup
+ *       (OPENSSL_cleanup); the legacy explicit cleanup calls
+ *       (ERR_free_strings, EVP_cleanup, ENGINE_cleanup,
+ *       CONF_modules_free) are deprecated no-ops there, so this
+ *       function only has real work on older OpenSSL.
+ *
  * =========================================================================
  */
 static void
-uninit_openssl_low(PslOpensslInitData* const pData)
+uninit_openssl_low(void)
 {
     PSL_LOG_INFO("%s: ENTERING", __func__);
 
+#if PSL_OPENSSL_LEGACY_INIT
     /**
      * @note Properly cleaning up openssl's memory allocations is
      *       very important for the purpose of analyzing an
-     *       application's memory leaks.  If we don't have a
-     *       reliable mechanism for cleaning up the library's memory
-     *       allocations, it makes it more difficult to perform
-     *       memory leak analysis (discerning openssl leaks from
-     *       other leaks in the process).  Unforturnately, there is
+     *       application's memory leaks.  Unfortunately, there is
      *       no SSL_library_cleanup(), so openssl cleanup is pure
      *       voodoo.  Search the WEB for "Leaks in
      *       SSL_Library_init()" to see other threads on this topic.
-     * 
-     * @note Thread-local cleanup: ERR_remove_state(0) MUST be
-     *       called from the thread that called any openssl
-     *       functions to avoid a thread-specific memory leak.
      */
 
     /**
@@ -388,33 +430,19 @@ uninit_openssl_low(PslOpensslInitData* const pData)
     EVP_cleanup();
 
     /// DO THIS LAST:
-    thread_safety_cleanup(&pData->threadSafety);
+    thread_safety_cleanup(&gInitState.threadSafety);
+#endif // PSL_OPENSSL_LEGACY_INIT
 
     PSL_LOG_INFO("%s: LEAVING", __func__);
 }
 
 
+#if PSL_OPENSSL_LEGACY_INIT
 
 /** ========================================================================
- * thread_safety_init(): Initializes openssl thread-safety 
- * hooks. Assumes our module's mutex is locked. 
- * 
- * @todo openssl 1.0 switches to a dynamic thread-safety lock
- *       API.  We'll need to update thread_safety_init and
- *       thread_safety_cleanup once WebOS switches to openssl
- *       v1.0.  Need to file a JIRA for this task that is
- *       blocked by the openssl v1.0 upgrade task.
- * 
- * @todo 'man CRYPTO_set_id_callback' claims that dynamic locks
- *       are sometimes used by openssl for better performance.
- *       Do both 'dynamic' and 'static' locks need to be
- *       supported or just one of them?
- * 
- * @see CRYPTO_THREADID_set_callback,
- *      CRYPTO_set_dynlock_create_callback,
- *      CRYPTO_set_dynlock_lock_callback,
- *      CRYPTO_set_dynlock_destroy_callback
- * 
+ * thread_safety_init(): Initializes openssl thread-safety
+ * hooks. Assumes our module's mutex is locked.
+ *
  * =========================================================================
  */
 static void
@@ -427,12 +455,20 @@ thread_safety_init(ThreadSafetyInfo* const pData)
     PSL_ASSERT(!pData->numLocks);
     PSL_ASSERT(!pData->pLocks);
 
-    pData->numLocks = CRYPTO_num_locks();
+    int const numLocks = CRYPTO_num_locks();
 
-    PSL_LOG_DEBUG("%s: Initializing %d thread locks", __func__, pData->numLocks);
+    PSL_LOG_DEBUG("%s: Initializing %d thread locks", __func__, numLocks);
 
-    pData->pLocks = malloc(pData->numLocks * sizeof(pData->pLocks[0]));
-    PSL_ASSERT(!pData->numLocks || pData->pLocks);
+    pData->pLocks = malloc(numLocks * sizeof(pData->pLocks[0]));
+    if (numLocks && !pData->pLocks) {
+        /// Hard stop: proceeding without the lock array would leave
+        /// openssl without thread protection and lock_or_unlock_cb
+        /// dereferencing NULL
+        PSL_LOG_FATAL("%s: FATAL ERROR: failed to allocate %d thread " \
+                      "locks; aborting", __func__, numLocks);
+        abort();
+    }
+    pData->numLocks = numLocks;
 
     int i;
     for (i=0; i < pData->numLocks; i++) {
@@ -463,7 +499,7 @@ thread_safety_init(ThreadSafetyInfo* const pData)
 /** ========================================================================
  * thread_safety_cleanup(): Uninitializes openssl thread-safety
  * hooks
- * 
+ *
  * =========================================================================
  */
 static void
@@ -502,13 +538,13 @@ thread_safety_cleanup(ThreadSafetyInfo* const pData)
 /** ========================================================================
  * get_thread_id_cb(): callback function registered via
  * CRYPTO_set_id_callback()
- * 
+ *
  * @return unsigned long
- * 
+ *
  * =========================================================================
  */
 static unsigned long
-get_thread_id_cb()
+get_thread_id_cb(void)
 {
     unsigned long const threadId = (unsigned long)pthread_self();
 
@@ -521,12 +557,12 @@ get_thread_id_cb()
 /** ========================================================================
  * lock_or_unlock_cb(): callback function registered via
  * CRYPTO_set_locking_callback()
- * 
+ *
  * @param mode
  * @param type
  * @param file
  * @param line
- * 
+ *
  * =========================================================================
  */
 static void
@@ -538,10 +574,11 @@ lock_or_unlock_cb(int const mode, int const type, const char* const file,
                      file, line);
 
     if (mode & CRYPTO_LOCK) {
-        pthread_mutex_lock(&(gInitState.opensslData.threadSafety.pLocks[type].mutex));
+        pthread_mutex_lock(&(gInitState.threadSafety.pLocks[type].mutex));
     }
     else {
-        pthread_mutex_unlock(&(gInitState.opensslData.threadSafety.pLocks[type].mutex));
+        pthread_mutex_unlock(&(gInitState.threadSafety.pLocks[type].mutex));
     }
 }
 
+#endif // PSL_OPENSSL_LEGACY_INIT
