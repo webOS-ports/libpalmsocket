@@ -648,8 +648,9 @@ crypto_mode_state_handler(PslChanFsmCryptoModeState*    const pState,
     switch (evtId) 
     {
     case kFsmEventEnterScope:
-        psl_openssl_init_conditional(kPmSockOpensslInitType_DEFAULT);
         memset(&pState->sslInfo, 0, sizeof(pState->sslInfo));
+        pState->sslInfo.opensslInitTaken =
+            (0 == psl_openssl_init_conditional(kPmSockOpensslInitType_DEFAULT));
         pState->sslInfo.io.in.ioState = kPslChanFsmSSLIOState_idle;
         pState->sslInfo.io.out.ioState = kPslChanFsmSSLIOState_idle;
         (void)psl_io_buf_init(&pState->sslInfo.io.out.buf, kMaxIOBufSize);
@@ -666,7 +667,9 @@ crypto_mode_state_handler(PslChanFsmCryptoModeState*    const pState,
             PmSockSSLCtxUnref(pState->sslInfo.sslCtx);
             pState->sslInfo.sslCtx = NULL;
         }
-        PmSockOpensslUninit();
+        if (pState->sslInfo.opensslInitTaken) {
+            PmSockOpensslUninit();
+        }
         return kPslSmeEventStatus_success;
         break;
 

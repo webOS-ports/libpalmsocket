@@ -56,6 +56,10 @@ struct PmSockSSLContext_ {
     SSL_CTX*        opensslCtx;
 
     PslRefcount     refCount_;  ///< reference count (private)
+
+    /// TRUE if this instance holds an openssl-init reference that must
+    /// be released via PmSockOpensslUninit() at destruction (private)
+    gboolean        opensslInitTaken_;
 };
 
 
