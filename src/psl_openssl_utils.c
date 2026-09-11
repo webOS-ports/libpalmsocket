@@ -30,6 +30,8 @@
 #include <string.h>
 
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -150,22 +152,34 @@ PmSockOpensslMatchCertInStore(struct x509_store_ctx_st*  const x509StoreCtx,
     /// @see X509_STORE_CTX_get1_issuer + X509_check_issued + X509_cmp
 
     X509_NAME* const subjName = X509_get_subject_name(cert);
-    X509_OBJECT *installedObj = NULL;
-    int const rc = X509_STORE_get_by_subject(x509StoreCtx, X509_LU_X509, subjName,
-                                             installedObj); 
-    
+
+    /**
+     * @note With OpenSSL 1.1+, X509_STORE_get_by_subject() writes the
+     *       found object into the caller-provided X509_OBJECT (no NULL
+     *       check inside OpenSSL), and returns 1 on success, 0 on
+     *       failure -- the legacy X509_LU_* return values no longer
+     *       apply.
+     */
+    X509_OBJECT* const installedObj = X509_OBJECT_new();
+    if (!installedObj) {
+        PSL_LOG_ERROR("%s (cert=%p): ERROR: X509_OBJECT_new() failed",
+                      __func__, cert);
+        return PSL_ERR_MEM;
+    }
+
+    int const rc = X509_STORE_get_by_subject(x509StoreCtx, X509_LU_X509,
+                                             subjName, installedObj);
+
     bool matched = false;
 
-    if (X509_LU_X509 == rc && X509_OBJECT_get0_X509(installedObj)) {
+    if (rc > 0 && X509_OBJECT_get0_X509(installedObj)) {
         matched = (0 == X509_cmp(cert, X509_OBJECT_get0_X509(installedObj)));
     }
 
-    if (X509_LU_FAIL != rc) {
-        X509_OBJECT_free(installedObj);
-    }
+    X509_OBJECT_free(installedObj);
 
-    if (X509_LU_X509 != rc) {
-        PSL_LOG_DEBUG("%s (cert=%p): cert not found: X509_LU_=%d",
+    if (rc <= 0) {
+        PSL_LOG_DEBUG("%s (cert=%p): cert not found: rc=%d",
                       __func__, cert, rc);
         return PSL_ERR_NONE;
     }
@@ -190,6 +204,13 @@ PmSockOpensslMatchCertInStore(struct x509_store_ctx_st*  const x509StoreCtx,
 
     for (; i < sk_X509_OBJECT_num(X509_STORE_get0_objects(X509_STORE_CTX_get0_store(x509StoreCtx))); i++) {
         X509_OBJECT* const pObj = sk_X509_OBJECT_value(X509_STORE_get0_objects(X509_STORE_CTX_get0_store(x509StoreCtx)), i);
+
+        /// The store may also hold CRLs; X509_OBJECT_get0_X509 returns
+        /// NULL for those
+        if (!pObj || X509_LU_X509 != X509_OBJECT_get_type(pObj) ||
+            !X509_OBJECT_get0_X509(pObj)) {
+            continue;
+        }
 
         if (0 != X509_NAME_cmp(subjName, X509_get_subject_name(X509_OBJECT_get0_X509(pObj)))) {
             continue;
