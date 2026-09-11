@@ -189,6 +189,26 @@ static bool
 crypto_do_SSL_handshake(PslChanFsm*                  pFsm,
                         PslError*                    pPslErr);
 
+/**
+ * Waits for the completion of a server-initiated renegotiation
+ * handshake (kPmSockRenegOpt_waitForClientHandshake) by driving
+ * incoming handshake records with SSL_peek() and monitoring
+ * SSL_renegotiate_pending().
+ *
+ * @param pFsm
+ * @param pPslErr Non-NULL location for the result: 0 on successful
+ *                completion or "not done yet"; non-zero PslError on
+ *                hard failure
+ *
+ * @return bool TRUE if done (successfully or with hard error saved
+ *         in *pPslErr); FALSE if the wait is still in progress and
+ *         this function should be called again upon the next
+ *         delivery of PSL_CHAN_FSM_EVT_FD_WATCH.
+ */
+static bool
+crypto_do_reneg_wait_handshake(PslChanFsm*           pFsm,
+                               PslError*             pPslErr);
+
 
 /**
  * Our verify_callback function set via SSL_set_verify()
@@ -1619,21 +1639,24 @@ crypto_do_renegotiate(PslChanFsmCryptoRenegotiateState*     const pState,
             }
             else {
                 /**
-                 * @note UGLY, but NECESSARY manipulation of openssl's internal 
-                 *       data structure. SSL_ST_ACCEPT forces wait for the
-                 *       handshake to complete, not permitting writes until it
-                 *       does.  It also allows us to detect when the handshake
-                 *       completes.  SSL_set_accept_state() isn't useful here
-                 *       because it clears the current SSL/TLS state and would
-                 *       cause MAC errors.  Unfortunately, openssl doesn't seem
-                 *       to provide a proper API for this.
+                 * @note The legacy (openssl 0.9.8) implementation forced the
+                 *       internal handshake state to SSL_ST_ACCEPT here to
+                 *       make the state machine wait for the client's
+                 *       renegotiation handshake.  OpenSSL 1.1+ hides the
+                 *       state machine, and the 1.1.1-era substitute --
+                 *       SSL_set_accept_state() -- resets a _live_ session
+                 *       and corrupts it with MAC errors (exactly what the
+                 *       original author's comment warned against).  We now
+                 *       wait for the client's handshake by monitoring
+                 *       SSL_renegotiate_pending() and driving incoming
+                 *       handshake records with SSL_peek() in the handshake
+                 *       phase (see crypto_do_reneg_wait_handshake).
                  */
-                PSL_LOG_DEBUG("%s (fsm=%p): Forcing SSL_ST_ACCEPT to force " \
-                              "wait for completion of renegotiation " \
-                              "handshake per kPmSockRenegOpt_waitForClientHandshake",
+                PSL_LOG_DEBUG("%s (fsm=%p): waiting for completion of " \
+                              "renegotiation handshake per " \
+                              "kPmSockRenegOpt_waitForClientHandshake",
                               __func__, pFsm);
-                SSL_set_accept_state(sslInfo->ssl);
-                //sslInfo->ssl->state = SSL_ST_ACCEPT;
+                crypto_update_multi_fd_watch_giocondition(pFsm, G_IO_IN);
                 pState->phase = kPslChanFsmCryptoRenegPhase_handshake;
             }
 
@@ -1651,10 +1674,21 @@ crypto_do_renegotiate(PslChanFsmCryptoRenegotiateState*     const pState,
         }
         else {
             PslError pslerr;
-            if (crypto_do_SSL_handshake(pFsm, &pslerr)) {
+            bool handshakeDone;
+
+            if (kPslChanFsmEvtConnKind_cryptoServer == sslInfo->connKind &&
+                (pState->arg.data.conf.opts &
+                 kPmSockRenegOpt_waitForClientHandshake)) {
+                handshakeDone = crypto_do_reneg_wait_handshake(pFsm, &pslerr);
+            }
+            else {
+                handshakeDone = crypto_do_SSL_handshake(pFsm, &pslerr);
+            }
+
+            if (handshakeDone) {
                 pState->pslerr = pslerr;
                 pState->phase = kPslChanFsmCryptoRenegPhase_done;
-    
+
                 PSL_LOG_DEBUG(
                     "%s (fsm=%p): SSL handshake completed: PslError=%d (%s), " \
                     "SSL_renegotiate_pending()=%d", __func__, pFsm, pslerr,
@@ -1806,6 +1840,67 @@ crypto_do_SSL_handshake(PslChanFsm*                const pFsm,
 
     return handshakeFinished;
 }//crypto_do_SSL_handshake
+
+
+
+/** ========================================================================
+ * crypto_do_reneg_wait_handshake(): see forward declaration for
+ * documentation
+ * =========================================================================
+ */
+static bool
+crypto_do_reneg_wait_handshake(PslChanFsm* const pFsm,
+                               PslError*   const pPslErr)
+{
+    const PslChanFsmCryptoSharedInfo* const sslInfo = crypto_shared_info(pFsm);
+
+    *pPslErr = 0;
+
+    if (!SSL_renegotiate_pending(sslInfo->ssl)) {
+        PSL_LOG_DEBUG("%s (fsm=%p): renegotiation handshake completed",
+                      __func__, pFsm);
+        return true;
+    }
+
+    /**
+     * With OpenSSL 1.1+ the handshake state machine is opaque; incoming
+     * handshake records on an established connection are processed
+     * transparently by read operations.  SSL_peek() drives that
+     * processing without consuming any application data.
+     */
+    char peekByte;
+    int const sslRet = SSL_peek(sslInfo->ssl, &peekByte, 1);
+
+    if (!SSL_renegotiate_pending(sslInfo->ssl)) {
+        PSL_LOG_DEBUG("%s (fsm=%p): renegotiation handshake completed",
+                      __func__, pFsm);
+        return true;
+    }
+
+    if (sslRet > 0) {
+        /// The client sent application data before its handshake
+        /// response; keep waiting for more input
+        crypto_update_multi_fd_watch_giocondition(pFsm, G_IO_IN);
+        return false;
+    }
+
+    PslError const tempPslErr = psl_err_get_and_process_SSL_channel_error(
+        pFsm, sslInfo->ssl, sslRet, PSL_ERR_SSL_PROTOCOL);
+
+    switch (tempPslErr) {
+    case PSL_ERR_SSL_WANT_READ:
+        crypto_update_multi_fd_watch_giocondition(pFsm, G_IO_IN);
+        return false;   /// not done yet
+
+    case PSL_ERR_SSL_WANT_WRITE:
+        crypto_update_multi_fd_watch_giocondition(pFsm, G_IO_OUT);
+        return false;   /// not done yet
+
+    default:
+        *pPslErr = tempPslErr ? tempPslErr : PSL_ERR_SSL_PROTOCOL;
+        return true;    /// done with hard error
+    }
+}//crypto_do_reneg_wait_handshake
 
 
 
