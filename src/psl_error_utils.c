@@ -417,7 +417,7 @@ psl_err_get_and_process_SSL_channel_error(
             PSL_LOG_ERROR("%s (fsm=%p): ERROR: pslerr=%d (%s)",
                           __func__, pFsm, pslErr, PmSockErrStringFromError(pslErr));
         }
-        else if (-1 == sslFuncRet) { /// consult errno
+        else { /// sslFuncRet < 0 (typically -1): consult errno
             pslErr = psl_err_pslerror_from_errno(savederrno, PSL_ERR_SYSCALL);
             pslErr = (pslErr ? pslErr : PSL_ERR_SYSCALL);
             PSL_LOG_ERROR("%s (fsm=%p): ERROR: errno=%d (%s), pslerr=%d (%s)",
@@ -605,6 +605,13 @@ pslerror_from_openssl_lib_ssl_reason_code(int reasonCode, PslError defaultResult
         break;
     case SSL_R_TLSV1_ALERT_UNKNOWN_CA:      return PSL_ERR_SSL_ALERT_UNKNOWN_CA;
         break;
+#if defined(SSL_R_UNEXPECTED_EOF_WHILE_READING)
+    /// OpenSSL 3.x reports an unclean (truncated) EOF as an ERR_LIB_SSL
+    /// error instead of the legacy SSL_ERROR_SYSCALL-with-ret-0; map it
+    /// back to our documented "bad EOF" error code
+    case SSL_R_UNEXPECTED_EOF_WHILE_READING: return PSL_ERR_SSL_BAD_EOF;
+        break;
+#endif
     default:                                return defaultResult;
         break;
 
