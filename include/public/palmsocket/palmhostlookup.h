@@ -31,6 +31,8 @@
 #define PALMHOSTLOOKUP_H__
 
 
+#include <netdb.h>      ///< for struct hostent, used in our callback API
+
 #include <glib.h>
 
 #include "palmsockerror.h"

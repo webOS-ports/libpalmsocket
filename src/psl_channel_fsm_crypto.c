@@ -1288,6 +1288,8 @@ crypto_ssl_state_handler(PslChanFsmCryptoSSLState*  const pState,
                          PslSmeEventId              const evtId,
                          const PslChanFsmEvtArg*    const evtArg)
 {   
+    PSL_UNUSED(pState);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -2017,7 +2019,6 @@ crypto_ssl_peer_verify_callback(int                   preverify_ok,
         }
 
         if (pslerr) {
-            preverify_ok = false;
             sslInfo->pv.verifyFailCode = pslerr;
             /**
              * @todo Should we set X509_V_ERR_CERT_REJECTED, instead??? 

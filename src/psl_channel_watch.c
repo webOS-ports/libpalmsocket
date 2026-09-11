@@ -324,7 +324,9 @@ chan_watch_dispatch(GSource*    const base,
                   (unsigned long)watch->conditions,
                   (unsigned long)watch->pollfd.revents);
 
-    GIOFunc const func = (GIOFunc)callback;
+    /// Cast back through the generic function-pointer type to undo the
+    /// G_SOURCE_FUNC()-style cast applied at g_source_set_callback time
+    GIOFunc const func = (GIOFunc)(void (*)(void))callback;
     if (!func) {
         PSL_LOG_ERROR("%s: watch=%p: ERROR: PmSockWatch with " \
                       "NULL user callback: did you forget to call " \

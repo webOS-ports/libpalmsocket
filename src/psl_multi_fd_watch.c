@@ -481,7 +481,10 @@ multi_fd_watch_dispatch(GSource* const base,
                         gpointer userData)
 {
     PslMultiFdWatchSource* const source = (PslMultiFdWatchSource*)base;
-    PslMultiFdWatchSourceCb* const cb = (PslMultiFdWatchSourceCb*)opaqueCb;
+    /// Cast back through the generic function-pointer type to undo the
+    /// G_SOURCE_FUNC()-style cast applied at g_source_set_callback time
+    PslMultiFdWatchSourceCb* const cb =
+        (PslMultiFdWatchSourceCb*)(void (*)(void))opaqueCb;
 
     source->restartTimer = true; ///< so it will restart at next poll prepare
     

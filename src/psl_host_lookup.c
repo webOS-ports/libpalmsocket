@@ -44,6 +44,7 @@
 #include "palmsocket.h"
 #include "palmhostlookup.h"
 
+#include "psl_common.h"
 #include "psl_log.h"
 #include "psl_assert.h"
 #include "psl_error_utils.h"
@@ -199,7 +200,7 @@ PmSockHostLookupNew(PmSockHostLookupSession**   const   pSession,
     }
     g_source_set_can_recurse((GSource*)ses->multiFdWatch, false);
     g_source_set_callback((GSource*)ses->multiFdWatch,
-                          (GSourceFunc)&psl_host_lookup_fd_watch_cb, ses, NULL);
+                          PSL_SOURCE_FUNC(&psl_host_lookup_fd_watch_cb), ses, NULL);
     g_source_attach((GSource*)ses->multiFdWatch, ses->gmainCtx);
 
 

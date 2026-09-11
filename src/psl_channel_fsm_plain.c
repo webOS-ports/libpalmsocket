@@ -262,6 +262,8 @@ plain_mode_state_handler(PslChanFsmPlainModeState* const pState,
                          PslSmeEventId             const evtId,
                          const PslChanFsmEvtArg*   const evtArg)
 {   
+    PSL_UNUSED(pState); PSL_UNUSED(pFsm); PSL_UNUSED(evtArg);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -451,6 +453,8 @@ plain_host_lookup_cb(void*                      const userData,
                      const struct hostent*      const hosts,
                      PslError                   const errorCode)
 {
+    PSL_UNUSED(session);
+
     /**
      * @note We're guaranteed to be called from the scope of gmain
      *       dispatch, so it's safe to dispatch an FSM event from
@@ -687,6 +691,8 @@ plain_tcp_state_handler(PslChanFsmPlainTCPState*   const pState,
                         PslSmeEventId              const evtId,
                         const PslChanFsmEvtArg*    const evtArg)
 {   
+    PSL_UNUSED(pState);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -742,6 +748,8 @@ plain_shut_state_handler(PslChanFsmPlainShutState* const pState,
                          PslSmeEventId             const evtId,
                          const PslChanFsmEvtArg*   const evtArg)
 {
+    PSL_UNUSED(pState);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:

@@ -1169,6 +1169,8 @@ static GIOStatus
 palmsock_io_close(GIOChannel *const base,
                   GError    **const error)
 {
+    PSL_UNUSED(error);
+
     PSL_LOG_INFO("%s (ch=%p)", __func__, base);
 
     PSL_ASSERT(base);

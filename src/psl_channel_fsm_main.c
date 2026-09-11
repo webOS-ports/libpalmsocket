@@ -139,7 +139,7 @@ psl_chan_fsm_new(PslChanFsm**           const fsmResult,
     PSL_ASSERT(fsm->fdWatchInfo.fdWatch);
     g_source_set_can_recurse((GSource*)fsm->fdWatchInfo.fdWatch, false);
     g_source_set_callback((GSource*)fsm->fdWatchInfo.fdWatch,
-                          (GSourceFunc)&chan_fsm_fd_watch_cb,
+                          PSL_SOURCE_FUNC(&chan_fsm_fd_watch_cb),
                           fsm, NULL);
     g_source_set_priority((GSource*)fsm->fdWatchInfo.fdWatch, G_PRIORITY_HIGH);
     g_source_attach((GSource*)fsm->fdWatchInfo.fdWatch,
@@ -466,9 +466,9 @@ chan_fsm_free(PslChanFsm* const pFsm)
         chan_fsm_destroy_widgets(pFsm);
     }
 
-    g_free(pFsm);
+    PSL_LOG_DEBUGLOW("%s (fsm=%p): freeing", __func__, pFsm);
 
-    PSL_LOG_DEBUGLOW("%s (fsm=%p): LEAVING", __func__, pFsm);
+    g_free(pFsm);
 }
 
 
@@ -774,6 +774,8 @@ chan_fsm_init_state_handler(PslChanFsmInitState*    const pState,
                             PslSmeEventId           const evtId,
                             const PslChanFsmEvtArg* const evtArg)
 {   
+    PSL_UNUSED(pState);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -931,6 +933,8 @@ chan_fsm_closed_state_handler(PslChanFsmClosedState*    const pState,
                               PslSmeEventId             const evtId,
                               const PslChanFsmEvtArg*   const evtArg)
 {   
+    PSL_UNUSED(pState); PSL_UNUSED(evtArg);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -981,13 +985,15 @@ chan_fsm_final_state_handler(PslChanFsmFinalState*      const pState,
                              PslSmeEventId              const evtId,
                              const PslChanFsmEvtArg*    const evtArg)
 {   
+    PSL_UNUSED(evtArg);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
         PSL_ASSERT(pFsm->fsmClosed); ///< we should have been closed first
         chan_fsm_destroy_widgets(pFsm);
         pFsm->fsmFinalized = true;
-        /// FALLTHROUGH
+        PSL_FALLTHROUGH;
     case kFsmEventExitScope:
         /// FALLTHROUGH
     case kFsmEventBegin:
