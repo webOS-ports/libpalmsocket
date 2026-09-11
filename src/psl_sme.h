@@ -335,7 +335,10 @@ psl_sme_insert_state(PslSmeMachineBase* const pFsm,
                      PslSmeStateBase*   const pParentState)
 {
     PSL_ASSERT(pFsm && pState);
-    FsmInsertState(&pFsm->base, &pState->base, &pParentState->base);
+    /// pParentState may legitimately be NULL (top super-state);
+    /// taking &NULL->base would be undefined behavior
+    FsmInsertState(&pFsm->base, &pState->base,
+                   pParentState ? &pParentState->base : NULL);
 }
 
 

@@ -55,7 +55,9 @@ extern "C" {
 #define TLS_method()                    SSLv23_method()
 
 /// X509_OBJECT accessors (the struct became opaque in 1.1.0)
-#define X509_OBJECT_get_type(obj)       ((obj)->type)
+/// @note macro parameter names deliberately avoid the member names
+///       to prevent parameter capture during expansion
+#define X509_OBJECT_get_type(xobj_)     ((xobj_)->type)
 
 static inline X509*
 X509_OBJECT_get0_X509(const X509_OBJECT* const obj)
@@ -83,8 +85,8 @@ X509_OBJECT_free(X509_OBJECT* const obj)
 }
 
 /// X509_STORE/X509_STORE_CTX accessors (opaque since 1.1.0)
-#define X509_STORE_CTX_get0_store(ctx)  ((ctx)->ctx)
-#define X509_STORE_get0_objects(st)     ((st)->objs)
+#define X509_STORE_CTX_get0_store(xsc_) ((xsc_)->ctx)
+#define X509_STORE_get0_objects(xst_)   ((xst_)->objs)
 
 /**
  * OPENSSL_thread_stop() is the 1.1.0+ replacement for the legacy
