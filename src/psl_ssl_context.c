@@ -40,6 +40,7 @@
 #include "psl_error_utils.h"
 #include "psl_refcount.h"
 #include "psl_openssl_init.h"
+#include "psl_openssl_compat.h"
 #include "psl_ssl_context.h"
 
 
@@ -69,25 +70,21 @@ PmSockSSLCtxNew(const char* const userLabel, PmSockSSLContext** const pSSLCtx)
 
     PSL_ASSERT(pSSLCtx); *pSSLCtx = NULL;
 
+    /// @note g_new0/g_strdup abort on OOM, so no NULL checks are needed
     struct PmSockSSLContext_* const ctx =
         g_new0(struct PmSockSSLContext_, 1);
 
     PslError    pslerr = 0;
 
-    if (!ctx) {
-        pslerr = PSL_ERR_MEM;
-        goto error_cleanup;
-    }
-
     psl_refcount_init(&ctx->refCount_, "PSL_SSL_CTX", ctx);
 
-    psl_openssl_init_conditional(kPmSockOpensslInitType_DEFAULT);
-
-    ctx->userLabel = g_strdup(userLabel ? userLabel : "PSL_user");
-    if (!ctx->userLabel) {
-        pslerr = PSL_ERR_MEM;
+    pslerr = psl_openssl_init_conditional(kPmSockOpensslInitType_DEFAULT);
+    if (pslerr) {
         goto error_cleanup;
     }
+    ctx->opensslInitTaken_ = true;
+
+    ctx->userLabel = g_strdup(userLabel ? userLabel : "PSL_user");
 
 
     PSL_LOG_DEBUG("%s (ctx=%p/%s): New SSL Context memory allocated",
@@ -96,7 +93,9 @@ PmSockSSLCtxNew(const char* const userLabel, PmSockSSLContext** const pSSLCtx)
     /// Allocate an openssl SSL Context instance and initialize it
     char errTextBuf[PSL_ERR_OPENSSL_ERROR_BUF_SIZE] = "";
 
-    ctx->opensslCtx = SSL_CTX_new(SSLv23_method());
+    /// TLS_method() is the OpenSSL 1.1+ version-flexible method
+    /// (SSLv23_method is a deprecated alias for it)
+    ctx->opensslCtx = SSL_CTX_new(TLS_method());
     if (!ctx->opensslCtx) {
         pslerr = psl_err_process_and_purge_openssl_err_stack(ctx, errTextBuf,
                                                              sizeof(errTextBuf),
@@ -224,7 +223,9 @@ ssl_context_destroy_internal(PmSockSSLContext* const ctx)
         SSL_CTX_free(ctx->opensslCtx);
     }
 
-    PmSockOpensslUninit();
+    if (ctx->opensslInitTaken_) {
+        PmSockOpensslUninit();
+    }
 
     g_free(ctx);
 }

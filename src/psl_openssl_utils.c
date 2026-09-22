@@ -30,6 +30,8 @@
 #include <string.h>
 
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -43,6 +45,7 @@
 #include "psl_log.h"
 #include "psl_assert.h"
 #include "psl_common.h"
+#include "psl_openssl_compat.h"
 #include "psl_string_utils.h"
 #include "psl_inet_utils.h"
 
@@ -52,7 +55,8 @@ verify_hostname_in_subj_alt_name(const char*                     hn,
                                  const PslInetIPAddress*         pslinaddr,
                                  struct x509_st*                 pCert,
                                  PmSockOpensslHostnameVerifyOpts verifyOpts,
-                                 PmSockX509HostnameMatchOpts     nameMatchOpts);
+                                 PmSockX509HostnameMatchOpts     nameMatchOpts,
+                                 bool*                           pSawRelevantSanEntry);
 
 static bool
 verify_hostname_in_common_name(const char*                     hn,
@@ -74,10 +78,10 @@ PmSockOpensslVerifyHostname(const char*                     const hn,
                             bool*                           const pMatchRes)
 {
     PSL_LOG_DEBUGLOW(
-        "%s: hn=%p (%s), hnLen=%zd, pCert=%p verifyOpts=0x%lX, " \
+        "%s: hn=%p (%s), hnLen=%zu, pCert=%p verifyOpts=0x%lX, " \
         "nameMatchOpts=0x%lX, pMatchRes=%p",
-        __func__, hn, PSL_LOG_OBFUSCATE_STR(hn), strlen(hn), pCert, verifyOpts,
-        nameMatchOpts, pMatchRes);
+        __func__, hn, PSL_LOG_OBFUSCATE_STR(hn), hn ? strlen(hn) : 0, pCert,
+        verifyOpts, nameMatchOpts, pMatchRes);
 
 
     PSL_ASSERT(pMatchRes);
@@ -109,9 +113,23 @@ PmSockOpensslVerifyHostname(const char*                     const hn,
     bool const isIPAddr = psl_inet_ipaddr_from_string(hn, &pslinaddr, "hn", hn);
 
     /// Look through subjectAltName fields first
+    bool sawRelevantSanEntry = false;
     *pMatchRes = verify_hostname_in_subj_alt_name(hn, isIPAddr, &pslinaddr,
-                                                  pCert, verifyOpts, nameMatchOpts);
+                                                  pCert, verifyOpts, nameMatchOpts,
+                                                  &sawRelevantSanEntry);
     if (*pMatchRes) {
+        return PSL_ERR_NONE;
+    }
+
+    /**
+     * Per RFC 6125 (sec. 6.4.4), the Common Name may be consulted only
+     * when the certificate presents no subjectAltName entry of the
+     * relevant type (dNSName for hostnames, iPAddress for addresses)
+     */
+    if (sawRelevantSanEntry) {
+        PSL_LOG_DEBUGLOW(
+            "%s: hn=%p, pCert=%p: NO MATCH: subjectAltName entries present, " \
+            "skipping Common Name fallback", __func__, hn, pCert);
         return PSL_ERR_NONE;
     }
 
@@ -150,22 +168,34 @@ PmSockOpensslMatchCertInStore(struct x509_store_ctx_st*  const x509StoreCtx,
     /// @see X509_STORE_CTX_get1_issuer + X509_check_issued + X509_cmp
 
     X509_NAME* const subjName = X509_get_subject_name(cert);
-    X509_OBJECT *installedObj = NULL;
-    int const rc = X509_STORE_get_by_subject(x509StoreCtx, X509_LU_X509, subjName,
-                                             installedObj); 
-    
+
+    /**
+     * @note With OpenSSL 1.1+, X509_STORE_get_by_subject() writes the
+     *       found object into the caller-provided X509_OBJECT (no NULL
+     *       check inside OpenSSL), and returns 1 on success, 0 on
+     *       failure -- the legacy X509_LU_* return values no longer
+     *       apply.
+     */
+    X509_OBJECT* const installedObj = X509_OBJECT_new();
+    if (!installedObj) {
+        PSL_LOG_ERROR("%s (cert=%p): ERROR: X509_OBJECT_new() failed",
+                      __func__, cert);
+        return PSL_ERR_MEM;
+    }
+
+    int const rc = X509_STORE_get_by_subject(x509StoreCtx, X509_LU_X509,
+                                             subjName, installedObj);
+
     bool matched = false;
 
-    if (X509_LU_X509 == rc && X509_OBJECT_get0_X509(installedObj)) {
+    if (rc > 0 && X509_OBJECT_get0_X509(installedObj)) {
         matched = (0 == X509_cmp(cert, X509_OBJECT_get0_X509(installedObj)));
     }
 
-    if (X509_LU_FAIL != rc) {
-        X509_OBJECT_free(installedObj);
-    }
+    X509_OBJECT_free(installedObj);
 
-    if (X509_LU_X509 != rc) {
-        PSL_LOG_DEBUG("%s (cert=%p): cert not found: X509_LU_=%d",
+    if (rc <= 0) {
+        PSL_LOG_DEBUG("%s (cert=%p): cert not found: rc=%d",
                       __func__, cert, rc);
         return PSL_ERR_NONE;
     }
@@ -190,6 +220,13 @@ PmSockOpensslMatchCertInStore(struct x509_store_ctx_st*  const x509StoreCtx,
 
     for (; i < sk_X509_OBJECT_num(X509_STORE_get0_objects(X509_STORE_CTX_get0_store(x509StoreCtx))); i++) {
         X509_OBJECT* const pObj = sk_X509_OBJECT_value(X509_STORE_get0_objects(X509_STORE_CTX_get0_store(x509StoreCtx)), i);
+
+        /// The store may also hold CRLs; X509_OBJECT_get0_X509 returns
+        /// NULL for those
+        if (!pObj || X509_LU_X509 != X509_OBJECT_get_type(pObj) ||
+            !X509_OBJECT_get0_X509(pObj)) {
+            continue;
+        }
 
         if (0 != X509_NAME_cmp(subjName, X509_get_subject_name(X509_OBJECT_get0_X509(pObj)))) {
             continue;
@@ -217,9 +254,12 @@ verify_hostname_in_subj_alt_name(const char*                     const hn,
                                  const PslInetIPAddress*         const pslinaddr,
                                  struct x509_st*                 const pCert,
                                  PmSockOpensslHostnameVerifyOpts const verifyOpts,
-                                 PmSockX509HostnameMatchOpts     const nameMatchOpts)
+                                 PmSockX509HostnameMatchOpts     const nameMatchOpts,
+                                 bool*                           const pSawRelevantSanEntry)
 {
     PSL_ASSERT(!verifyOpts); ///< none are defined yet
+
+    *pSawRelevantSanEntry = false;
 
     if (X509_get_ext_count(pCert) <= 0) {
         PSL_LOG_DEBUGLOW("%s: hn=%p, pCert=%p: no extensions in cert",
@@ -252,7 +292,9 @@ verify_hostname_in_subj_alt_name(const char*                     const hn,
                 continue;
             }
 
-            const char* const rawDnsName = (const char*)ASN1_STRING_data(name->d.dNSName);
+            *pSawRelevantSanEntry = true;
+
+            const char* const rawDnsName = (const char*)ASN1_STRING_get0_data(name->d.dNSName);
             int const dnsNameLength = ASN1_STRING_length(name->d.dNSName);
             
             PslError const pslerr = PmSockX509CheckCertHostNameMatch(
@@ -272,11 +314,13 @@ verify_hostname_in_subj_alt_name(const char*                     const hn,
             /// Per RFC-5280: ipAddress in subjAltName field is OCTET STRING in
             /// network byte order; exactly 4 octets for IPv4 and
             /// exactly 16 octets for IPv6
-            const unsigned char* const pRawIPAddr = ASN1_STRING_data(
+            const unsigned char* const pRawIPAddr = ASN1_STRING_get0_data(
                 name->d.iPAddress);
             int const rawIPAddrLen = ASN1_STRING_length(name->d.iPAddress);
 
             PSL_ASSERT(pslinaddr->family != AF_UNSPEC);
+
+            *pSawRelevantSanEntry = true;
 
             if (pslinaddr->len != rawIPAddrLen ||
                 0 != memcmp(&pslinaddr->addr, pRawIPAddr, rawIPAddrLen)) {
@@ -372,10 +416,26 @@ verify_hostname_in_common_name(const char*                     const hn,
         if (isIPAddr) {
             PSL_ASSERT(pslinaddr->family != AF_UNSPEC);
 
-            /// Convert string to binary form for comparison
+            /**
+             * @note ASN1_STRING_to_UTF8 output is not guaranteed to be
+             *       NUL-terminated on all OpenSSL versions/conversion
+             *       paths, so make a bounded, explicitly-terminated
+             *       copy before parsing it as an address string.  A CN
+             *       containing an embedded NUL (e.g. "1.2.3.4\0evil")
+             *       must not be treated as an address either.
+             */
+            char fldzt[INET6_ADDRSTRLEN];
+            bool maybeAddr = false;
             PslInetIPAddress certaddr;
-            bool const maybeAddr = psl_inet_ipaddr_from_string(
-                (char*)fld, &certaddr, "hn", hn);
+            if ((size_t)fldLen < sizeof(fldzt) &&
+                !memchr(fld, '\0', (size_t)fldLen)) {
+                memcpy(fldzt, fld, (size_t)fldLen);
+                fldzt[fldLen] = '\0';
+
+                /// Convert string to binary form for comparison
+                maybeAddr = psl_inet_ipaddr_from_string(
+                    fldzt, &certaddr, "hn", hn);
+            }
 
             if (maybeAddr) {
                 if (pslinaddr->len == certaddr.len &&

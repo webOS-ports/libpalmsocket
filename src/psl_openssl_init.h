@@ -50,12 +50,16 @@ extern "C" {
  * openssl to single-threaded support by explicitly calling 
  * PmSockOpensslInit(kPmSockOpensslInitType_singleThreaded).
  *  
- * @note psl_openssl_init_conditional() calls MUST be balanced 
- *       by an equal number of PmSockOpensslUninit() calls.
- * 
+ * @note Each _successful_ psl_openssl_init_conditional() call MUST be
+ *       balanced by exactly one PmSockOpensslUninit() call; on failure
+ *       no init reference is taken and PmSockOpensslUninit() MUST NOT
+ *       be called for it.
+ *
  * @param initType SHOULD be kPmSockOpensslInitType_DEFAULT
+ *
+ * @return PslError 0 on success; non-zero PslError code on failure
  */
-void psl_openssl_init_conditional(PmSockOpensslInitType initType);
+PslError psl_openssl_init_conditional(PmSockOpensslInitType initType);
 
 
 #if defined(__cplusplus)

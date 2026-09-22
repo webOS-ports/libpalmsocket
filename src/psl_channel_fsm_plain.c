@@ -262,6 +262,8 @@ plain_mode_state_handler(PslChanFsmPlainModeState* const pState,
                          PslSmeEventId             const evtId,
                          const PslChanFsmEvtArg*   const evtArg)
 {   
+    PSL_UNUSED(pState); PSL_UNUSED(pFsm); PSL_UNUSED(evtArg);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -392,6 +394,24 @@ plain_lookup_state_handler(PslChanFsmPlainLookupState* const pState,
                 return kPslSmeEventStatus_error;
             }
 
+            /**
+             * @note c-ares may report success with an empty or
+             *       incomplete hostent (e.g., CNAME-only answers), so
+             *       validate before dereferencing -- the data
+             *       originates from an untrusted DNS responder
+             */
+            if (!arg->hosts || !arg->hosts->h_addr_list ||
+                !arg->hosts->h_addr_list[0] ||
+                (AF_INET != arg->hosts->h_addrtype &&
+                 AF_INET6 != arg->hosts->h_addrtype)) {
+                PSL_LOG_ERROR("%s (fsm=%p): ERROR: host lookup returned no " \
+                              "usable address records", __func__, pFsm);
+                psl_chan_fsm_set_last_error(pFsm, kPslChanFsmErrorSource_psl,
+                                            PSL_ERR_BAD_SERV_ADDR);
+                psl_chan_fsm_goto_plain_fail_state(pFsm, PSL_ERR_BAD_SERV_ADDR);
+                return kPslSmeEventStatus_error;
+            }
+
             char* const * const addrs = arg->hosts->h_addr_list;
 
             struct PslChanFsmEvtInetAddrText addrText;
@@ -433,6 +453,8 @@ plain_host_lookup_cb(void*                      const userData,
                      const struct hostent*      const hosts,
                      PslError                   const errorCode)
 {
+    PSL_UNUSED(session);
+
     /**
      * @note We're guaranteed to be called from the scope of gmain
      *       dispatch, so it's safe to dispatch an FSM event from
@@ -580,7 +602,15 @@ plain_conn_state_handler(PslChanFsmPlainConnState* const pState,
                     socklen_t solen = sizeof(soerror);
                     int rc = getsockopt(pFsm->fd, SOL_SOCKET, SO_ERROR,
                                         &soerror, &solen);
-                    PSL_ASSERT(0 == rc);
+                    if (0 != rc) {
+                        /// Don't treat an unreadable status as success
+                        int const saverrno = errno;
+                        PSL_LOG_ERROR(
+                            "%s (fsm=%p): ERROR: getsockopt(SO_ERROR) " \
+                            "failed: errno=%d (%s)", __func__, pFsm,
+                            saverrno, strerror(saverrno));
+                        soerror = saverrno ? saverrno : ECONNABORTED;
+                    }
 
                     pState->failPslErr =
                         psl_err_pslerror_from_connect_errno(soerror);
@@ -661,6 +691,8 @@ plain_tcp_state_handler(PslChanFsmPlainTCPState*   const pState,
                         PslSmeEventId              const evtId,
                         const PslChanFsmEvtArg*    const evtArg)
 {   
+    PSL_UNUSED(pState);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -716,6 +748,8 @@ plain_shut_state_handler(PslChanFsmPlainShutState* const pState,
                          PslSmeEventId             const evtId,
                          const PslChanFsmEvtArg*   const evtArg)
 {
+    PSL_UNUSED(pState);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -917,8 +951,23 @@ plain_make_and_config_sock(PslChanFsm* const pFsm,
     PslError    pslErr = PSL_ERR_SOCKET;
     int saverrno;
 
-    /// Create a socket
-    int s = socket(sockFamily, SOCK_STREAM, 0);
+    /// Create a socket with close-on-exec set, so live connection fds
+    /// don't leak into fork/exec'd child processes.  SOCK_CLOEXEC
+    /// needs kernel >= 2.6.27, so fall back to fcntl() for legacy
+    /// devices.
+    int s = -1;
+#if defined(SOCK_CLOEXEC)
+    s = socket(sockFamily, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (s < 0 && (EINVAL == errno || EPROTONOSUPPORT == errno))
+#endif
+    {
+        s = socket(sockFamily, SOCK_STREAM, 0);
+        if (s >= 0 && fcntl(s, F_SETFD, FD_CLOEXEC) < 0) {
+            PSL_LOG_ERROR("%s (fsm=%p): ERROR: fcntl(FD_CLOEXEC) failed; " \
+                          "errno=%d (%s)", __func__, pFsm, errno,
+                          strerror(errno));
+        }
+    }
     if (s < 0) {
         saverrno = errno;
         PSL_LOG_ERROR("%s (fsm=%p): ERROR: socket() failed; " \

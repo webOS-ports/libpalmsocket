@@ -36,6 +36,7 @@
 #include "psl_build_config.h"
 
 #include <stdbool.h>
+#include <stdlib.h>
 #include <sys/types.h>
 #include <string.h>
 
@@ -83,6 +84,17 @@ psl_sme_begin_transition(PslSmeMachineBase* const pFsm,
     if (beginEvtArg) {
         PSL_ASSERT(beginEvtArgSize > 0 &&
                    beginEvtArgSize <= pFsm->beginEvtData_.beginArgBufSize);
+        if (beginEvtArgSize > pFsm->beginEvtData_.beginArgBufSize) {
+            /// Hard stop: memcpy below would overflow beginRequestArgBuf,
+            /// and the assert above is compiled out under NDEBUG
+            PSL_LOG_FATAL(
+                "%s (fsm=%p/%s): FATAL ERROR: begin-event arg size %zu " \
+                "exceeds buffer size %zu; aborting",
+                __func__, pFsm, FsmDbgPeekMachineName(&pFsm->base),
+                (size_t)beginEvtArgSize,
+                (size_t)pFsm->beginEvtData_.beginArgBufSize);
+            abort();
+        }
         pFsm->beginEvtData_.reqTargetState = pTargetState;
         pFsm->beginEvtData_.reqArgSize = beginEvtArgSize;
         pFsm->beginEvtData_.requesterFuncName = requesterFuncName;

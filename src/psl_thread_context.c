@@ -169,6 +169,8 @@ thread_context_destroy_internal(PmSockThreadContext* const ctx)
 
     PSL_ASSERT(ctx);
 
+    PSL_LOG_DEBUGLOW("%s (ctx=%p): freeing", __func__, ctx);
+
     g_free(ctx->userLabel);
 
     if (ctx->gmainCtx) {
@@ -176,8 +178,5 @@ thread_context_destroy_internal(PmSockThreadContext* const ctx)
     }
 
     g_free(ctx);
-
-
-    PSL_LOG_DEBUGLOW("%s (ctx=%p): LEAVING", __func__, ctx);
 }
 

@@ -123,10 +123,21 @@ psl_inet_make_sock_addr(int                       const reqFamily,
                         const char*               const userLabel,
                         const void*               const cookie)
 {
-    PSL_ASSERT(AF_INET == reqFamily || AF_INET6 == reqFamily ||
-           AF_UNSPEC == reqFamily);
-    PSL_ASSERT(AF_UNSPEC != reqFamily || (addrStr && addrStr[0]));
     PSL_ASSERT(res);
+
+    /// Real (non-assert) validation: an unexpected family must not fall
+    /// through into the AF_INET6 branch below
+    if (AF_INET != reqFamily && AF_INET6 != reqFamily &&
+        AF_UNSPEC != reqFamily) {
+        PSL_LOG_ERROR("%s (%s=%p): ERROR: unsupported address family %d",
+                      __func__, userLabel, cookie, reqFamily);
+        return EINVAL;
+    }
+    if (AF_UNSPEC == reqFamily && (!addrStr || !addrStr[0])) {
+        PSL_LOG_ERROR("%s (%s=%p): ERROR: AF_UNSPEC requires an address " \
+                      "string", __func__, userLabel, cookie);
+        return EINVAL;
+    }
 
     memset(res, 0, sizeof(*res));
 

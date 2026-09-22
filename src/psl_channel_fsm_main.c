@@ -36,6 +36,10 @@
 
 #include <glib.h>
 
+/// Expose FsmDbgEnableLoggingViaPmLogLib from PalmFsmDbg.h; the
+/// webOS-ports PmStateMachineEngine is built with
+/// FSM_CONFIG_WEBOS_FEATURES=1, so the symbol is available
+#define STATE_MACHINE_ENGINE_WEBOS_FEATURES
 #include <PmStateMachineEngine/PalmFsm.h>
 #include <PmStateMachineEngine/PalmFsmDbg.h>
 
@@ -135,7 +139,7 @@ psl_chan_fsm_new(PslChanFsm**           const fsmResult,
     PSL_ASSERT(fsm->fdWatchInfo.fdWatch);
     g_source_set_can_recurse((GSource*)fsm->fdWatchInfo.fdWatch, false);
     g_source_set_callback((GSource*)fsm->fdWatchInfo.fdWatch,
-                          (GSourceFunc)&chan_fsm_fd_watch_cb,
+                          PSL_SOURCE_FUNC(&chan_fsm_fd_watch_cb),
                           fsm, NULL);
     g_source_set_priority((GSource*)fsm->fdWatchInfo.fdWatch, G_PRIORITY_HIGH);
     g_source_attach((GSource*)fsm->fdWatchInfo.fdWatch,
@@ -147,6 +151,14 @@ psl_chan_fsm_new(PslChanFsm**           const fsmResult,
                          sizeof(fsm->beginEvtArgSupport.requestArgBuf),
                          &fsm->beginEvtArgSupport.requestArgBuf,
                          &fsm->beginEvtArgSupport.dispatchArgBuf);
+
+    /// Route FSM event logging through our PmLogLib context (restores
+    /// the debug logging that was dropped while fixing the build for
+    /// newer toolchains)
+    FsmDbgEnableLoggingViaPmLogLib(&fsm->base.base,
+                                   kFsmDbgLogOptEvents,
+                                   gPslLogContext,
+                                   channel/*cookie*/);
 
     /// Initialize and insert our common states into the FSM
 
@@ -454,9 +466,9 @@ chan_fsm_free(PslChanFsm* const pFsm)
         chan_fsm_destroy_widgets(pFsm);
     }
 
-    g_free(pFsm);
+    PSL_LOG_DEBUGLOW("%s (fsm=%p): freeing", __func__, pFsm);
 
-    PSL_LOG_DEBUGLOW("%s (fsm=%p): LEAVING", __func__, pFsm);
+    g_free(pFsm);
 }
 
 
@@ -762,6 +774,8 @@ chan_fsm_init_state_handler(PslChanFsmInitState*    const pState,
                             PslSmeEventId           const evtId,
                             const PslChanFsmEvtArg* const evtArg)
 {   
+    PSL_UNUSED(pState);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -798,7 +812,13 @@ chan_fsm_init_state_handler(PslChanFsmInitState*    const pState,
             const struct PslChanFsmEvtArgSetConnFD* const arg =
                 &evtArg->setConnFD;
 
-            PSL_ASSERT(arg->fd >= 0);
+            /// Reject invalid descriptors outright: storing a negative fd
+            /// here would surface later as writes/closes on a bad fd
+            if (arg->fd < 0) {
+                PSL_LOG_ERROR("%s (fsm=%p): SET_CONN_FD ERROR: invalid " \
+                              "file descriptor %d", __func__, pFsm, arg->fd);
+                return kPslSmeEventStatus_passToParent;
+            }
 
             if (AF_UNSPEC != pFsm->userSettings.serverAddr.addrFamily) {
                 PSL_LOG_ERROR("%s (fsm=%p): SET_CONN_FD ERROR: " \
@@ -913,6 +933,8 @@ chan_fsm_closed_state_handler(PslChanFsmClosedState*    const pState,
                               PslSmeEventId             const evtId,
                               const PslChanFsmEvtArg*   const evtArg)
 {   
+    PSL_UNUSED(pState); PSL_UNUSED(evtArg);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
@@ -963,13 +985,15 @@ chan_fsm_final_state_handler(PslChanFsmFinalState*      const pState,
                              PslSmeEventId              const evtId,
                              const PslChanFsmEvtArg*    const evtArg)
 {   
+    PSL_UNUSED(evtArg);
+
     switch (evtId) 
     {
     case kFsmEventEnterScope:
         PSL_ASSERT(pFsm->fsmClosed); ///< we should have been closed first
         chan_fsm_destroy_widgets(pFsm);
         pFsm->fsmFinalized = true;
-        /// FALLTHROUGH
+        PSL_FALLTHROUGH;
     case kFsmEventExitScope:
         /// FALLTHROUGH
     case kFsmEventBegin:

@@ -128,8 +128,11 @@ PmSockX509CheckCertHostNameMatch(const char* cn, unsigned const cnLen,
 
         // Neither is EOF
 
-        char const cnOctet = toupper(cn[cnIdx]);
-        char const hnOctet = toupper(hn[hnIdx]);
+        /// Cast through unsigned char: passing a negative (high-bit) char
+        /// to toupper() is undefined behavior, and plain char signedness
+        /// differs between ARM (unsigned) and x86 (signed)
+        int const cnOctet = toupper((unsigned char)cn[cnIdx]);
+        int const hnOctet = toupper((unsigned char)hn[hnIdx]);
 
         if (cnOctet == hnOctet) {
             if (cnOctet == '.') {

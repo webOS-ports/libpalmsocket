@@ -43,6 +43,33 @@ extern "C" {
 #define PSL_INVALID_FD               (-1)
 
 
+/**
+ * Marks a deliberately unused function parameter (e.g., in uniform
+ * state-handler signatures) to suppress -Wunused-parameter
+ */
+#define PSL_UNUSED(x)                ((void)(x))
+
+
+/**
+ * Casts a function pointer to GSourceFunc for g_source_set_callback()
+ * via the generic function-pointer type, avoiding
+ * -Wcast-function-type.  (Equivalent to glib 2.58+'s G_SOURCE_FUNC,
+ * which older webOS glib versions lack.)
+ */
+#define PSL_SOURCE_FUNC(f)           ((GSourceFunc)(void (*)(void))(f))
+
+
+/**
+ * Marks an intentional switch-case fallthrough.  (Equivalent to glib
+ * 2.60+'s G_GNUC_FALLTHROUGH, which older webOS glib versions lack.)
+ */
+#if defined(__GNUC__) && __GNUC__ >= 7
+    #define PSL_FALLTHROUGH          __attribute__((__fallthrough__))
+#else
+    #define PSL_FALLTHROUGH          do {} while (0)
+#endif
+
+
 
 /**
  * @note These are technically output-only conditions from the

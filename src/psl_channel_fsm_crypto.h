@@ -188,6 +188,10 @@ typedef struct PslChanFsmCryptoSharedInfo_ {
     /// to psl_multi_fd_watch_add_or_update_fd()
     GIOCondition            lastGIOCondition;
 
+    /// TRUE if this state holds an openssl-init reference that must be
+    /// released via PmSockOpensslUninit() at exit-scope
+    bool                    opensslInitTaken;
+
 } PslChanFsmCryptoSharedInfo;
 
 

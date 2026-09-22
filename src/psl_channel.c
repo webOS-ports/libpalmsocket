@@ -1169,6 +1169,8 @@ static GIOStatus
 palmsock_io_close(GIOChannel *const base,
                   GError    **const error)
 {
+    PSL_UNUSED(error);
+
     PSL_LOG_INFO("%s (ch=%p)", __func__, base);
 
     PSL_ASSERT(base);
@@ -1176,11 +1178,14 @@ palmsock_io_close(GIOChannel *const base,
     struct PmSockIOChannel_* const ch = (struct PmSockIOChannel_*)base;
 
     /**
-     * @note We may be partially-constructed when g_io_channel_unref
-     *       is called during error cleanup in
-     *       PmSockCreateChannel())
+     * @note We may be partially-constructed (pFsm still NULL) when
+     *       g_io_channel_unref is called during error cleanup in
+     *       PmSockCreateChannel(): close_on_unref is already set by
+     *       then, so glib invokes io_close before io_free
      */
-    psl_chan_fsm_evt_dispatch_CLOSE(ch->pFsm);
+    if (ch->pFsm) {
+        psl_chan_fsm_evt_dispatch_CLOSE(ch->pFsm);
+    }
     return G_IO_STATUS_NORMAL;
 }
 
