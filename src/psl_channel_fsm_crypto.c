@@ -49,6 +49,7 @@
 #include "psl_multi_fd_watch.h"
 #include "psl_thread_context.h"
 #include "psl_ssl_context.h"
+#include "psl_inet_utils.h"
 #include "psl_openssl_init.h"
 
 #include "psl_channel_fsm_events.h"
@@ -118,6 +119,12 @@ static PSL_CHAN_FSM_STATE_HANDLER_DECLARE(crypto_shut_state_handler,
 static PSL_CHAN_FSM_STATE_HANDLER_DECLARE(crypto_ssl_state_handler,
                                           PslChanFsmCryptoSSLState);
 
+
+/**
+ * Sends the server's hostname as TLS SNI on a client channel.
+ */
+static void
+crypto_set_sni_hostname(PslChanFsm* pFsm, SSL* ssl);
 
 /**
  * Create and configure our openssl channel; prepare the
@@ -1374,6 +1381,56 @@ crypto_ssl_state_handler(PslChanFsmCryptoSSLState*  const pState,
 
 
 /** ========================================================================
+ * crypto_set_sni_hostname(): Sends the server's hostname in the
+ * ClientHello (TLS Server Name Indication, RFC 6066).
+ *
+ * Servers that host several certificates behind one address pick
+ * the certificate by SNI. Without it Gmail answers with a
+ * self-signed placeholder ("No SNI provided - please fix your
+ * client.", CN=invalid2.invalid) and verification fails with
+ * X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, so an imap.gmail.com
+ * account could not be added at all.
+ *
+ * RFC 6066 does not permit an IP address literal as a server
+ * name, so none is sent for one. A name OpenSSL refuses (longer
+ * than 255 bytes) is logged and the connection goes ahead without
+ * SNI, as it always did before.
+ * =========================================================================
+ */
+static void
+crypto_set_sni_hostname(PslChanFsm* const pFsm, SSL* const ssl)
+{
+    const char* const hostStr = pFsm->userSettings.serverAddr.hostStr;
+
+    if (!hostStr || !hostStr[0]) {
+        return;
+    }
+
+    if (psl_inet_is_hostname_ip_address(hostStr, "PSL_FSM", pFsm)) {
+        PSL_LOG_DEBUG("%s (fsm=%p): server is an IP address, not sending SNI",
+                      __func__, pFsm);
+        return;
+    }
+
+    if (!SSL_set_tlsext_host_name(ssl, hostStr)) {
+        char sslErrTextBuf[PSL_ERR_OPENSSL_ERROR_BUF_SIZE] = "";
+        (void)psl_err_process_and_purge_openssl_err_stack(
+            pFsm, sslErrTextBuf, sizeof(sslErrTextBuf), PSL_ERR_SSL_CONFIG,
+            NULL);
+        PSL_LOG_WARNING("%s (fsm=%p): could not set SNI hostname '%s', " \
+                        "connecting without it: %s",
+                        __func__, pFsm, PSL_LOG_OBFUSCATE_STR(hostStr),
+                        sslErrTextBuf);
+        return;
+    }
+
+    PSL_LOG_DEBUG("%s (fsm=%p): SNI hostname '%s'",
+                  __func__, pFsm, PSL_LOG_OBFUSCATE_STR(hostStr));
+}//crypto_set_sni_hostname
+
+
+
+/** ========================================================================
  * =========================================================================
  */
 static PslError
@@ -1496,6 +1553,8 @@ crypto_create_and_config_ssl(
     if (kPslChanFsmEvtConnKind_cryptoClient == connKind) {
         SSL_set_verify(sslInfo->ssl, SSL_VERIFY_PEER,
                        &crypto_ssl_peer_verify_callback);
+
+        crypto_set_sni_hostname(pFsm, sslInfo->ssl);
     }
     else {
         /// Our default configuration for server mode is to not request

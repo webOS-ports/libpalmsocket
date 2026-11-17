@@ -60,7 +60,7 @@ endif
 LIB_SRCS  := $(wildcard $(REPO)/src/*.c)
 LIB_OBJS  := $(patsubst $(REPO)/src/%.c,$(BUILD)/lib/%.o,$(LIB_SRCS))
 
-TESTS     := test_io_buf test_hostname test_cert_store test_loopback
+TESTS     := test_io_buf test_hostname test_cert_store test_loopback test_sni
 TEST_BINS := $(addprefix $(BUILD)/,$(TESTS))
 
 .PHONY: all check stress clean
